@@ -1,127 +1,137 @@
-require("dotenv").config();
-require("express-async-errors");
+// index.js
+import express from 'express';
+import bodyParser from 'body-parser';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import { randomUUID } from 'crypto';
+import {
+    StandardCheckoutClient,
+    Env,
+    StandardCheckoutPayRequest,
+    CreateSdkOrderRequest
+} from 'pg-sdk-node';
 
-const express = require("express");
-const cors = require("cors");
-const helmet = require("helmet");
-const rateLimit = require("express-rate-limit");
-const { randomUUID } = require("crypto");
-
-const { PgSdk } = require("pg-sdk-node");
+dotenv.config();
 
 const app = express();
+const PORT = process.env.PORT || 3000;
 
-// ✅ Middleware
-app.use(helmet());
-app.use(express.json());
+// Load ENV vars
+const {
+    PHONEPE_CLIENT_ID,
+    PHONEPE_CLIENT_SECRET,
+    FRONTEND_ORIGIN,
+    REDIRECT_BASE_URL,
+    CALLBACK_USERNAME,
+    CALLBACK_PASSWORD,
+} = process.env;
 
-const allowedOrigin = process.env.FRONTEND_ORIGIN || "https://dermatiqueindia.com";
+const clientVersion = 1;
+const env = Env.PRODUCTION; // For production
+const client = StandardCheckoutClient.getInstance(
+    PHONEPE_CLIENT_ID,
+    PHONEPE_CLIENT_SECRET,
+    clientVersion,
+    env
+);
+
+// Middlewares
+app.use(bodyParser.json());
 app.use(cors({
-    origin: allowedOrigin,
-    methods: ["GET", "POST"],
-    allowedHeaders: ["Content-Type"],
+    origin: FRONTEND_ORIGIN,
+    methods: ['POST', 'GET'],
 }));
 
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
-
-// ✅ Environment Variables & Config
-const merchantId = process.env.PG_MERCHANT_ID;
-const saltKey = process.env.PG_SALT_KEY;
-const saltIndex = process.env.PG_SALT_INDEX;
-const env = process.env.PG_ENV || "UAT"; // or "PROD"
-const redirectBaseUrl = process.env.REDIRECT_BASE_URL || `${allowedOrigin}/payment`;
-
-if (!merchantId || !saltKey || !saltIndex) {
-    throw new Error("❌ PG_MERCHANT_ID, PG_SALT_KEY, or PG_SALT_INDEX not set in environment variables.");
-}
-
-// ✅ Logging for Debug (don't log secrets in prod)
-if (process.env.NODE_ENV !== "production") {
-    console.log("📦 PhonePe Config:");
-    console.log("🆔 PG_MERCHANT_ID:", merchantId);
-    console.log("🔑 PG_SALT_KEY length:", saltKey.length);
-    console.log("🔢 PG_SALT_INDEX:", saltIndex);
-    console.log("🌍 PG_ENV:", env);
-}
-
-// ✅ Initialize SDK
-const phonePe = PgSdk({
-    merchantId: process.env.PG_MERCHANT_ID,
-    saltKey: process.env.PG_SALT_KEY,
-    saltIndex: process.env.PG_SALT_INDEX,
-    env: process.env.PG_ENV || "UAT",
-});
-
-// ✅ Routes
-app.get("/", (req, res) => {
-    res.send("✅ PhonePe Payment Gateway Live");
-});
-
-app.post("/pay", async (req, res) => {
+// Create Order (redirect checkout)
+app.post('/api/create-order', async (req, res) => {
     try {
-        const amountInRupees = Number(req.body.amount);
-        if (isNaN(amountInRupees) || amountInRupees <= 0) {
-            return res.status(400).json({ success: false, message: "Invalid amount" });
-        }
+        const { amount } = req.body;
+        const merchantOrderId = randomUUID();
+        const redirectUrl = `${REDIRECT_BASE_URL}?orderId=${merchantOrderId}`;
 
-        const amountInPaise = amountInRupees * 100;
-        const merchantTransactionId = randomUUID();
-        const redirectUrl = `${redirectBaseUrl}/validate/${merchantTransactionId}`;
+        const request = StandardCheckoutPayRequest.builder()
+            .merchantOrderId(merchantOrderId)
+            .amount(amount)
+            .redirectUrl(redirectUrl)
+            .build();
 
-        const payload = {
-            amount: amountInPaise,
-            merchantTransactionId,
-            merchantUserId: "user-001", // You can dynamically assign userId
-            redirectUrl,
-            redirectMode: "POST",
-            paymentInstrument: {
-                type: "PAY_PAGE",
-            },
-        };
+        const response = await client.pay(request);
 
-        const response = await phonePe.createPaymentLink(payload);
-        console.log("📤 PhonePe Create Payment Response:", response);
-
-        if (response.success && response.data?.instrumentResponse?.redirectInfo?.url) {
-            return res.json({
-                success: true,
-                checkoutPageUrl: response.data.instrumentResponse.redirectInfo.url,
-            });
-        } else {
-            return res.status(500).json({ success: false, message: "Failed to create payment link", details: response });
-        }
+        res.status(200).json({
+            success: true,
+            redirectUrl: response.redirectUrl,
+            merchantOrderId,
+        });
     } catch (err) {
-        console.error("❌ Payment Error:", err);
-        return res.status(500).json({ success: false, error: err.message });
+        console.error('Create Order Error:', err);
+        res.status(500).json({ error: 'Payment initiation failed' });
     }
 });
 
-app.post("/payment/validate/:merchantTransactionId", async (req, res) => {
+// Create SDK Order
+app.post('/api/create-sdk-order', async (req, res) => {
     try {
-        const { merchantTransactionId } = req.params;
+        const { amount } = req.body;
+        const merchantOrderId = randomUUID();
+        const redirectUrl = `${REDIRECT_BASE_URL}?orderId=${merchantOrderId}`;
 
-        const response = await phonePe.getPaymentStatus(merchantTransactionId);
-        console.log("📥 Payment Status Response:", response);
+        const request = CreateSdkOrderRequest.StandardCheckoutBuilder()
+            .merchantOrderId(merchantOrderId)
+            .amount(amount)
+            .redirectUrl(redirectUrl)
+            .build();
 
-        const redirectTo = response.success && response.data?.state === "COMPLETED"
-            ? `${redirectBaseUrl}/success`
-            : `${redirectBaseUrl}/failed`;
+        const response = await client.createSdkOrder(request);
 
-        res.redirect(redirectTo);
+        res.status(200).json({
+            success: true,
+            token: response.token,
+            merchantOrderId,
+        });
     } catch (err) {
-        console.error("❌ Validation Error:", err);
-        res.redirect(`${redirectBaseUrl}/failed`);
+        console.error('SDK Order Error:', err);
+        res.status(500).json({ error: 'SDK order creation failed' });
     }
 });
 
-// ✅ Error Handler
-app.use((err, req, res, next) => {
-    console.error("🔥 Unhandled Server Error:", err);
-    res.status(500).json({ success: false, error: err.message });
+// Order Status Check
+app.get('/api/order-status/:orderId', async (req, res) => {
+    try {
+        const response = await client.getOrderStatus(req.params.orderId);
+        res.status(200).json({
+            orderId: req.params.orderId,
+            state: response.state,
+        });
+    } catch (err) {
+        console.error('Order Status Error:', err);
+        res.status(500).json({ error: 'Failed to check order status' });
+    }
 });
 
-// ✅ Start Server
-const PORT = process.env.PORT || 3002;
+// Callback from PhonePe
+app.post('/api/phonepe-callback', async (req, res) => {
+    try {
+        const authorization = req.headers['x-verify'];
+        const bodyString = JSON.stringify(req.body);
+
+        const callbackResponse = client.validateCallback(
+            CALLBACK_USERNAME,
+            CALLBACK_PASSWORD,
+            authorization,
+            bodyString
+        );
+
+        // You can persist callbackResponse.payload to DB here
+        console.log('PhonePe Callback:', callbackResponse.payload);
+
+        res.status(200).send('Callback verified');
+    } catch (err) {
+        console.error('Invalid Callback:', err);
+        res.status(400).send('Invalid callback');
+    }
+});
+
+// Server Start
 app.listen(PORT, () => {
-    console.log(`🚀 Server running at http://localhost:${PORT}`);
+    console.log(`🚀 PhonePe backend running on port ${PORT}`);
 });
