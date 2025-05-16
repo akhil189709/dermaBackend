@@ -45,11 +45,11 @@ if (process.env.NODE_ENV !== "production") {
 }
 
 // ✅ Initialize SDK
-const phonePe = new PgSdk({
-    merchantId,
-    saltKey,
-    saltIndex,
-    env,
+const phonePe = PgSdk({
+    merchantId: process.env.PG_MERCHANT_ID,
+    saltKey: process.env.PG_SALT_KEY,
+    saltIndex: process.env.PG_SALT_INDEX,
+    env: process.env.PG_ENV || "UAT",
 });
 
 // ✅ Routes
