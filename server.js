@@ -19,7 +19,7 @@ const app = express();
 app.use(helmet());
 app.use(express.json());
 
-const allowedOrigin = process.env.FRONTEND_ORIGIN || "https://dermatiqueindia.com";
+const allowedOrigin = process.env.FRONTEND_ORIGIN || "https://dermatiqueindia.com/cart";
 app.use(cors({
     origin: allowedOrigin,
     methods: ["GET", "POST"],
