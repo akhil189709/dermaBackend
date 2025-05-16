@@ -6,7 +6,6 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const { randomUUID } = require("crypto");
-
 const {
     StandardCheckoutClient,
     Env,
@@ -15,36 +14,35 @@ const {
 
 const app = express();
 
-// ✅ Middleware
+// Security Middleware
 app.use(helmet());
 app.use(express.json());
 
-const allowedOrigin = process.env.FRONTEND_ORIGIN || "https://dermatiqueindia.com/cart";
+// CORS Setup
+const allowedOrigin = process.env.FRONTEND_ORIGIN || "https://dermatiqueindia.com";
 app.use(cors({
     origin: allowedOrigin,
     methods: ["GET", "POST"],
     allowedHeaders: ["Content-Type"],
 }));
 
+// Rate Limiting
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
 
-// ✅ Config
+// Environment Config
 const merchantId = process.env.PG_MERCHANT_ID;
 const saltKey = process.env.PG_SALT_KEY;
 const saltIndex = process.env.PG_SALT_INDEX;
 const envMode = (process.env.PG_ENV || "UAT").toUpperCase();
+const redirectBaseUrl = process.env.REDIRECT_BASE_URL || `${allowedOrigin}/payment`;
 
-console.log("📦 PhonePe Config:");
-console.log("🆔 PG_MERCHANT_ID:", merchantId);
-console.log("🔑 PG_SALT_KEY length:", saltKey?.length);
-console.log("🔢 PG_SALT_INDEX:", saltIndex);
-console.log("🌍 PG_ENV:", envMode);
-
+// Validate essential env vars
 if (!merchantId || !saltKey || !saltIndex) {
-    throw new Error("❌ PG_MERCHANT_ID, PG_SALT_KEY, or PG_SALT_INDEX not set in environment variables.");
+    console.error("❌ Missing PhonePe environment variables");
+    process.exit(1); // Exit for safety
 }
 
-// Initialize PhonePe SDK client properly
+// Initialize PhonePe client
 const client = StandardCheckoutClient.getInstance(
     merchantId,
     saltKey,
@@ -52,17 +50,18 @@ const client = StandardCheckoutClient.getInstance(
     envMode === "PROD" ? Env.PROD : Env.SANDBOX
 );
 
-const redirectBaseUrl = process.env.REDIRECT_BASE_URL || `${allowedOrigin}/payment`;
-
-// ✅ Routes
+// Root endpoint
 app.get("/", (req, res) => {
-    res.send("✅ PhonePe Payment Gateway Live");
+    res.send("✅ PhonePe Payment Gateway is live.");
 });
 
+// Create payment
 app.post("/pay", async (req, res) => {
     try {
-        const amountInRupees = Number(req.body.amount);
-        if (isNaN(amountInRupees) || amountInRupees <= 0) {
+        const { amount } = req.body;
+        const amountInRupees = Number(amount);
+
+        if (!amountInRupees || isNaN(amountInRupees) || amountInRupees <= 0) {
             return res.status(400).json({ success: false, message: "Invalid amount" });
         }
 
@@ -77,44 +76,47 @@ app.post("/pay", async (req, res) => {
             .build();
 
         const response = await client.pay(request);
-        console.log("📤 PhonePe Pay Response:", response);
 
         if (response.redirectUrl) {
             return res.json({ success: true, checkoutPageUrl: response.redirectUrl });
-        } else {
-            return res.status(500).json({ success: false, message: "Failed to initiate payment", details: response });
         }
+
+        console.error("❌ Payment Initiation Failed:", response);
+        return res.status(502).json({ success: false, message: "Payment initiation failed", details: response });
     } catch (err) {
         console.error("❌ Payment Error:", err);
-        return res.status(500).json({ success: false, error: err.message });
+        return res.status(500).json({ success: false, error: "Internal server error" });
     }
 });
 
+// Payment validation
 app.get("/payment/validate/:merchantOrderId", async (req, res) => {
-    try {
-        const merchantOrderId = req.params.merchantOrderId;
-        const response = await client.getOrderStatus(merchantOrderId);
-        console.log("📥 Payment Status:", response);
+    const { merchantOrderId } = req.params;
 
-        const redirectTo = response.state === "COMPLETED"
+    try {
+        const response = await client.getOrderStatus(merchantOrderId);
+        const isSuccess = response.state === "COMPLETED";
+
+        const redirectTo = isSuccess
             ? `${redirectBaseUrl}/success`
             : `${redirectBaseUrl}/failed`;
 
-        res.redirect(redirectTo);
+        console.log(`ℹ️ Payment Status for ${merchantOrderId}: ${response.state}`);
+        return res.redirect(redirectTo);
     } catch (err) {
         console.error("❌ Validation Error:", err);
-        res.redirect(`${redirectBaseUrl}/failed`);
+        return res.redirect(`${redirectBaseUrl}/failed`);
     }
 });
 
-// ✅ Error Handling
+// Global error handler
 app.use((err, req, res, next) => {
-    console.error("🔥 Server Error:", err);
-    res.status(500).json({ success: false, error: err.message });
+    console.error("❌ Uncaught Server Error:", err);
+    res.status(500).json({ success: false, error: "Something went wrong!" });
 });
 
-// ✅ Start Server
+// Start Server
 const PORT = process.env.PORT || 3002;
 app.listen(PORT, () => {
-    console.log(`🚀 Server running at http://localhost:${PORT}`);
+    console.log(`🚀 Server running in ${envMode} mode at http://localhost:${PORT}`);
 });
