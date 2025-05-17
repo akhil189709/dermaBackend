@@ -19,7 +19,7 @@ app.use(helmet());
 app.use(express.json());
 
 // CORS Setup
-const allowedOrigin = process.env.FRONTEND_ORIGIN || "https://dermatiqueindia.com";
+const allowedOrigin = process.env.FRONTEND_ORIGIN;
 app.use(cors({
     origin: allowedOrigin,
     methods: ["GET", "POST"],
@@ -33,7 +33,7 @@ app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
 const merchantId = process.env.PG_MERCHANT_ID;
 const saltKey = process.env.PG_SALT_KEY;
 const saltIndex = process.env.PG_SALT_INDEX;
-const envMode = (process.env.PG_ENV || "UAT").toUpperCase();
+const envMode = process.env.PG_ENV === "PRODUCTION" ? Env.PROD : Env.SANDBOX;
 const redirectBaseUrl = process.env.REDIRECT_BASE_URL || `${allowedOrigin}/payment`;
 
 // Validate essential env vars
@@ -47,7 +47,7 @@ const client = StandardCheckoutClient.getInstance(
     merchantId,
     saltKey,
     parseInt(saltIndex, 10),
-    envMode === "PROD" ? Env.PROD : Env.SANDBOX
+    envMode === "PRODUCTION" ? Env.PROD : Env.SANDBOX
 );
 
 // Root endpoint
@@ -81,10 +81,10 @@ app.post("/pay", async (req, res) => {
             return res.json({ success: true, checkoutPageUrl: response.redirectUrl });
         }
 
-        console.error("❌ Payment Initiation Failed:", response);
+        console.error("Payment Initiation Failed:", response);
         return res.status(502).json({ success: false, message: "Payment initiation failed", details: response });
     } catch (err) {
-        console.error("❌ Payment Error:", err);
+        console.error("Payment Error:", err);
         return res.status(500).json({ success: false, error: "Internal server error" });
     }
 });
@@ -101,7 +101,7 @@ app.get("/payment/validate/:merchantOrderId", async (req, res) => {
             ? `${redirectBaseUrl}/success`
             : `${redirectBaseUrl}/failed`;
 
-        console.log(`ℹ️ Payment Status for ${merchantOrderId}: ${response.state}`);
+        console.log(`Payment Status for ${merchantOrderId}: ${response.state}`);
         return res.redirect(redirectTo);
     } catch (err) {
         console.error("❌ Validation Error:", err);
